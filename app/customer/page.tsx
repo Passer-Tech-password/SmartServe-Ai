@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth, fetchUserProfile, signOut } from "@/lib/auth";
+import Link from "next/link";
 
 export default function CustomerPage() {
   const user = useAuth();
@@ -52,12 +53,12 @@ export default function CustomerPage() {
           <p className="text-sm text-gray-500">
             View the status of your tickets
           </p>
-          <a
+          <Link
             href="/tickets"
             className="mt-3 inline-block px-3 py-2 bg-gray-100 rounded"
           >
             View Tickets
-          </a>
+          </Link>
         </div>
       </div>
     </div>

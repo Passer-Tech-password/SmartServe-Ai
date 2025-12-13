@@ -6,39 +6,79 @@ import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 import { useRouter } from "next/navigation";
 import { doc, getDoc } from "firebase/firestore";
+import Navbar from "../components/Navbar";
+import Footer from "../components/Footer";
 
 export default function LoginPage() {
-  const [role, setRole] = useState("customer");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const router = useRouter();
 
-  async function handleSubmit(e: any) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
+    setError("");
 
-    const email = e.target.email.value;
-    const password = e.target.password.value;
+    const form = e.target as HTMLFormElement;
+    const email = form.email.value;
+    const password = form.password.value;
 
     try {
+      // LOGIN
       const userCred = await signInWithEmailAndPassword(auth, email, password);
 
-      const docRef = doc(db, "users", userCred.user.uid);
-      const docSnap = await getDoc(docRef);
+      // FETCH USER ROLE FROM FIRESTORE
+      const userRef = doc(db, "users", userCred.user.uid);
+      const userSnap = await getDoc(userRef);
 
-      const role = docSnap.data()?.role;
+      if (!userSnap.exists()) {
+        setError("Your account is missing a role. Contact support.");
+        setLoading(false);
+        return;
+      }
 
-      if (role === "admin") router.push("/admin");
-      if (role === "agent") router.push("/agent");
-      if (role === "customer") router.push("/customer");
-    } catch (err) {
-      setError("Invalid email or password");
+      const userRole = userSnap.data().role;
+
+      // SAFE ROLE CHECK
+      if (!userRole) {
+        setError("No role assigned to this account.");
+        setLoading(false);
+        return;
+      }
+
+      // REDIRECT BASED ON ROLE
+      switch (userRole) {
+        case "admin":
+          router.push("/admin");
+          break;
+        case "agent":
+          router.push("/agent");
+          break;
+        case "customer":
+          router.push("/customer");
+          break;
+        default:
+          setError("Invalid role. Contact support.");
+      }
+    } catch (err: any) {
+      // HANDLE FIREBASE ERRORS
+      const code = err.code;
+
+      if (code === "auth/wrong-password" || code === "auth/user-not-found") {
+        setError("Invalid email or password.");
+      } else if (code === "auth/too-many-requests") {
+        setError("Too many attempts. Try again later.");
+      } else {
+        setError(err.message || "Something went wrong. Try again.");
+      }
     }
 
     setLoading(false);
   }
 
   return (
+    <>
+    <Navbar />
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-600 to-indigo-700 px-4">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-8">
         <div className="text-center mb-8">
@@ -53,22 +93,6 @@ export default function LoginPage() {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Login as
-            </label>
-            <select
-              name="role"
-              value={role}
-              onChange={e => setRole(e.target.value)}
-              className="w-full border rounded-lg px-4 py-2"
-            >
-              <option value="customer">Customer</option>
-              <option value="agent">Support Agent</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-
           <input
             required
             name="email"
@@ -76,6 +100,7 @@ export default function LoginPage() {
             placeholder="Email"
             className="w-full border rounded-lg px-4 py-2"
           />
+
           <input
             required
             name="password"
@@ -112,5 +137,7 @@ export default function LoginPage() {
         </p>
       </div>
     </div>
+    <Footer/>
+    </>
   );
 }

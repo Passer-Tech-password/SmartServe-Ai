@@ -4,24 +4,41 @@ import Link from "next/link";
 import { useState } from "react";
 import { sendPasswordResetEmail } from "firebase/auth";
 import { auth } from "@/lib/firebase";
+import Footer from "../components/Footer";
+import Navbar from "../components/Navbar";
 
 export default function ForgotPasswordPage() {
   const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  async function handleSubmit(e: any) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const email = e.target.email.value;
+    setError("");
+    setLoading(true);
+
+    const form = e.target as HTMLFormElement;
+    const email = form.email.value;
 
     try {
       await sendPasswordResetEmail(auth, email);
       setSent(true);
-    } catch (err) {
-      alert("Failed to send reset email");
+    } catch (err: any) {
+      if (err.code === "auth/user-not-found") {
+        setError("No account found with this email.");
+      } else if (err.code === "auth/invalid-email") {
+        setError("Invalid email address.");
+      } else {
+        setError("Failed to send reset link. Please try again.");
+      }
     }
+
+    setLoading(false);
   }
 
   return (
+    <>
+    <Navbar/>
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-700 to-gray-900 px-4">
       <div className="bg-white w-full max-w-md p-8 rounded-2xl shadow-xl">
         <h2 className="text-2xl font-bold text-center mb-4">
@@ -29,11 +46,17 @@ export default function ForgotPasswordPage() {
         </h2>
 
         {sent ? (
-          <p className="text-green-600 text-center">
+          <p className="text-green-600 text-center font-medium">
             Password reset link sent to your email ✅
           </p>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-5">
+            {error && (
+              <div className="bg-red-100 text-red-700 p-2 rounded text-sm">
+                {error}
+              </div>
+            )}
+
             <input
               name="email"
               type="email"
@@ -41,9 +64,10 @@ export default function ForgotPasswordPage() {
               className="w-full border rounded-lg px-4 py-2"
               required
             />
+
             <button
               disabled={loading}
-              className="w-full bg-gray-800 text-white py-2 rounded-lg"
+              className="w-full bg-gray-900 text-white py-2 rounded-lg"
             >
               {loading ? "Sending..." : "Send Reset Link"}
             </button>
@@ -58,6 +82,7 @@ export default function ForgotPasswordPage() {
         </p>
       </div>
     </div>
+    <Footer/>
+    </>
   );
 }
-// File: smartserve/app/forgot-password/page.tsx
