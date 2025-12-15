@@ -5,37 +5,23 @@ import { adminDB } from "@/lib/firebase-admin";
 export async function POST(req: NextRequest) {
   try {
     const authHeader = req.headers.get("authorization");
-
-    if (!authHeader?.startsWith("Bearer ")) {
+    if (!authHeader) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const token = authHeader.split(" ")[1];
-
-    // ✅ Verify that requester is an ADMIN
+    const token = authHeader.split("Bearer ")[1];
     await verifyAdmin(token);
 
-    const body = await req.json();
-    const { userId, newRole } = body;
+    const { uid } = await req.json();
 
-    if (!userId || !newRole) {
-      return NextResponse.json({ error: "Missing data" }, { status: 400 });
-    }
-
-    if (!["admin", "agent", "customer"].includes(newRole)) {
-      return NextResponse.json({ error: "Invalid role" }, { status: 400 });
-    }
-
-    // ✅ Update role securely
-    await adminDB.collection("users").doc(userId).update({
-      role: newRole,
-      updatedAt: new Date(),
+    await adminDB.collection("users").doc(uid).update({
+      role: "admin",
     });
 
     return NextResponse.json({ success: true });
-  } catch (err: any) {
+  } catch (error: any) {
     return NextResponse.json(
-      { error: err.message || "Server error" },
+      { error: error.message },
       { status: 500 }
     );
   }

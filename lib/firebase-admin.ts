@@ -1,4 +1,6 @@
+// lib/firebase-admin.ts
 import { initializeApp, getApps, cert } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 
 const serviceAccount = {
@@ -9,7 +11,10 @@ const serviceAccount = {
 
 const app =
   getApps().length === 0
-    ? initializeApp({ credential: cert(serviceAccount) })
+    ? initializeApp({
+        credential: cert(serviceAccount),
+      })
     : getApps()[0];
 
-export const db = getFirestore(app);
+export const adminAuth = getAuth(app);
+export const adminDB = getFirestore(app);
