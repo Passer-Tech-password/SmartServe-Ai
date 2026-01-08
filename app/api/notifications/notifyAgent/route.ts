@@ -2,72 +2,87 @@
 import { NextResponse } from "next/server";
 import admin from "firebase-admin";
 
-if (!admin.apps.length) {
-  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-    throw new Error(
-      "FIREBASE_SERVICE_ACCOUNT env var is required for admin operations"
-    );
-  }
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-}
-const firestore = admin.firestore();
+/* ------------------------------------------------------------------
+   Firebase Admin (lazy init – required for Next.js App Router)
+------------------------------------------------------------------- */
+function getFirestore() {
+  if (!admin.apps.length) {
+    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
 
-/**
- * POST body:
- * { agentId: string, title: string, body?: string, ticketId?: string }
- *
- * Writes a notifications doc under users/{agentId}/notifications and optionally
- * POSTs to an external webhook (NOTIFY_WEBHOOK_URL) for push/email.
- */
+    if (!serviceAccountJson) {
+      throw new Error("FIREBASE_SERVICE_ACCOUNT is not set");
+    }
+
+    admin.initializeApp({
+      credential: admin.credential.cert(JSON.parse(serviceAccountJson)),
+    });
+  }
+
+  return admin.firestore();
+}
+
+/* ------------------------------------------------------------------
+   POST /api/notifications/notifyAgent
+   Body: { agentId: string; title: string; body?: string; ticketId?: string }
+------------------------------------------------------------------- */
 export async function POST(req: Request) {
   try {
-    const { agentId, title, body, ticketId } = await req.json();
-    if (!agentId || !title)
+    const firestore = getFirestore();
+
+    /* ---------- Validate request body ---------- */
+    const payload = await req.json().catch(() => null);
+
+    if (!payload?.agentId || !payload?.title) {
       return NextResponse.json(
-        { error: "Missing agentId or title" },
+        { error: "agentId and title are required" },
         { status: 400 }
       );
+    }
 
-    const notifRef = firestore
+    const { agentId, title, body, ticketId } = payload;
+
+    /* ---------- Create notification ---------- */
+    await firestore
       .collection("users")
       .doc(agentId)
       .collection("notifications")
-      .doc();
-    await notifRef.set({
-      title,
-      body: body || null,
-      ticketId: ticketId || null,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      read: false,
-    });
+      .add({
+        title,
+        body: body ?? null,
+        ticketId: ticketId ?? null,
+        read: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
 
-    // Optional external webhook (e.g., push gateway or email service)
-    if (process.env.NOTIFY_WEBHOOK_URL) {
+    /* ---------- Optional external webhook ---------- */
+    const webhookUrl = process.env.NOTIFY_WEBHOOK_URL;
+
+    if (webhookUrl) {
       try {
-        await fetch(process.env.NOTIFY_WEBHOOK_URL, {
+        await fetch(webhookUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             agentId,
             title,
-            body,
-            ticketId,
+            body: body ?? null,
+            ticketId: ticketId ?? null,
             timestamp: new Date().toISOString(),
           }),
         });
-      } catch (err) {
-        console.warn("External notify webhook failed:", err);
+      } catch (webhookError) {
+        // Webhook failures should NOT break the API
+        console.warn("Notify webhook failed:", webhookError);
       }
     }
 
-    return NextResponse.json({ ok: true });
-  } catch (err: any) {
-    console.error("notifyAgent error:", err);
+    /* ---------- Success ---------- */
+    return NextResponse.json({ success: true }, { status: 200 });
+  } catch (error: any) {
+    console.error("notifyAgent error:", error);
+
     return NextResponse.json(
-      { error: err.message || "unknown" },
+      { error: error.message ?? "Internal server error" },
       { status: 500 }
     );
   }

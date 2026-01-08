@@ -2,92 +2,106 @@
 import { NextResponse } from "next/server";
 import admin from "firebase-admin";
 
-// Initialize Firebase Admin once
-if (!admin.apps.length) {
-  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-    throw new Error(
-      "FIREBASE_SERVICE_ACCOUNT env var is required for admin operations"
-    );
-  }
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-}
-const firestore = admin.firestore();
+/* ------------------------------------------------------------------
+   Firebase Admin (lazy initialization – SAFE for Next.js build)
+------------------------------------------------------------------- */
+function getFirestore() {
+  if (!admin.apps.length) {
+    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
 
-/**
- * POST body:
- * { ticketId: string, preferDepartment?: string }
- *
- * Behavior:
- * - finds agent with role "agent" and smallest activeTickets count
- * - updates ticket.assignedAgentId and ticket.status = "in_progress"
- * - increments agent.activeTickets counter
- */
+    if (!serviceAccountJson) {
+      throw new Error("FIREBASE_SERVICE_ACCOUNT is not set");
+    }
+
+    admin.initializeApp({
+      credential: admin.credential.cert(JSON.parse(serviceAccountJson)),
+    });
+  }
+
+  return admin.firestore();
+}
+
+/* ------------------------------------------------------------------
+   POST /api/tickets/assign
+   Body: { ticketId: string; preferDepartment?: string }
+------------------------------------------------------------------- */
 export async function POST(req: Request) {
   try {
-    const { ticketId, preferDepartment } = await req.json();
-    if (!ticketId)
-      return NextResponse.json({ error: "Missing ticketId" }, { status: 400 });
+    const firestore = getFirestore();
 
-    // Read ticket
+    /* ---------- Validate request body ---------- */
+    const body = await req.json().catch(() => null);
+    if (!body?.ticketId) {
+      return NextResponse.json(
+        { error: "ticketId is required" },
+        { status: 400 }
+      );
+    }
+
+    const { ticketId, preferDepartment } = body;
+
+    /* ---------- Load ticket ---------- */
     const ticketRef = firestore.collection("tickets").doc(ticketId);
     const ticketSnap = await ticketRef.get();
-    if (!ticketSnap.exists)
-      return NextResponse.json({ error: "Ticket not found" }, { status: 404 });
-    const ticket = ticketSnap.data() || {};
 
-    // Query agents
-    let agentsQ = firestore.collection("users").where("role", "==", "agent");
-    // optional: filter by department if agent has department field
+    if (!ticketSnap.exists) {
+      return NextResponse.json(
+        { error: "Ticket not found" },
+        { status: 404 }
+      );
+    }
+
+    /* ---------- Query available agents ---------- */
+    let agentsQuery = firestore
+      .collection("users")
+      .where("role", "==", "agent");
+
     if (preferDepartment) {
-      agentsQ = agentsQ.where(
+      agentsQuery = agentsQuery.where(
         "departments",
         "array-contains",
         preferDepartment
       );
     }
 
-    const agentsSnap = await agentsQ.get();
+    const agentsSnap = await agentsQuery.get();
+
     if (agentsSnap.empty) {
       return NextResponse.json(
         { error: "No agents available" },
-        { status: 200 }
+        { status: 409 }
       );
     }
 
-    // Pick agent with smallest activeTickets (TypeScript-safe)
+    /* ---------- Select least-loaded agent ---------- */
     const agents = agentsSnap.docs.map(doc => ({
       id: doc.id,
       data: doc.data(),
     }));
 
-    if (agents.length === 0) {
-      return NextResponse.json(
-        { error: "No agents available" },
-        { status: 200 }
-      );
-    }
-
-    const selected = agents.reduce((prev, curr) => {
-      const prevActive = Number(prev.data.activeTickets || 0);
-      const currActive = Number(curr.data.activeTickets || 0);
-      return currActive < prevActive ? curr : prev;
+    const selectedAgent = agents.reduce((prev, curr) => {
+      const prevCount = Number(prev.data.activeTickets || 0);
+      const currCount = Number(curr.data.activeTickets || 0);
+      return currCount < prevCount ? curr : prev;
     });
 
-    // Extract immutable values
-    const agentId: string = selected.id;
-    const agentData = selected.data;
+    const agentId = selectedAgent.id;
 
-    // Use transaction to avoid race conditions
+    /* ---------- Transaction (atomic update) ---------- */
     await firestore.runTransaction(async tx => {
       const agentRef = firestore.collection("users").doc(agentId);
       const agentSnap = await tx.get(agentRef);
-      const agentDataTx = agentSnap.exists ? agentSnap.data() : {};
-      const newActive = (agentDataTx?.activeTickets || 0) + 1;
 
-      tx.update(agentRef, { activeTickets: newActive });
+      if (!agentSnap.exists) {
+        throw new Error("Selected agent not found");
+      }
+
+      const currentActive = Number(agentSnap.data()?.activeTickets || 0);
+
+      tx.update(agentRef, {
+        activeTickets: currentActive + 1,
+      });
+
       tx.update(ticketRef, {
         assignedAgentId: agentId,
         status: "in_progress",
@@ -95,28 +109,31 @@ export async function POST(req: Request) {
       });
     });
 
-    // Create notification
-    const notifRef = firestore
+    /* ---------- Create notification ---------- */
+    await firestore
       .collection("users")
       .doc(agentId)
       .collection("notifications")
-      .doc();
+      .add({
+        title: "New ticket assigned",
+        ticketId,
+        read: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
 
-    await notifRef.set({
-      title: "New ticket assigned",
-      ticketId,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      read: false,
-    });
-
-    return NextResponse.json({
-      assignedAgentId: agentId,
-      agent: agentData,
-    });
-  } catch (err: any) {
-    console.error("Assign ticket error:", err);
+    /* ---------- Success response ---------- */
     return NextResponse.json(
-      { error: err.message || "unknown" },
+      {
+        success: true,
+        assignedAgentId: agentId,
+      },
+      { status: 200 }
+    );
+  } catch (error: any) {
+    console.error("Assign ticket error:", error);
+
+    return NextResponse.json(
+      { error: error.message ?? "Internal server error" },
       { status: 500 }
     );
   }
